@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Coinbase Wallet USDC Recovery</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+</head>
+<body>
+    <div>
+        <h2>Recover USDC from Coinbase Smart Wallet</h2>
+        <form id="recoveryForm">
+            <div>
+				 <label>Your Wallet Address:</label><br>
+                <input type="text" id="walletAddress" size="50" required>
+            </div>
+            <div>
+                <label>Recipient Address:</label><br>
+                <input type="text" id="recipientAddress" size="50" required>
+            </div>
+            <div>
+                <label>USDC Amount:</label><br>
+                <input type="number" id="amount" value="150" step="0.01" required>
+            </div>
+            <div>
+                <label>Credential ID</label><br>
+                <input type="text" id="credentialId" size="50">
+            </div>
+            <button type="submit">Recover Funds</button>
+        </form>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        class SimplifiedRecovery {
+            constructor(walletAddress, recipientAddress, amount, credentialId) {
+                this.walletAddress = walletAddress;
+                this.recipientAddress = recipientAddress;
+                this.amount = amount;
+               
+                this.credentialId = PASSKEY_PUBKEY;
+                this.bundlerUrl = 'https://public.stackup.sh/api/v1/node/ethereum-mainnet';
+                this.provider = new ethers.JsonRpcProvider(
+                'https://eth-mainnet.g.alchemy.com/v2/' + API_KEY
+				)
+           }
+
+            async signWithPasskey(userOpHash) {
+                const challenge = new Uint8Array(ethers.getBytes(userOpHash));
+                
+                const assertionOptions = {
+                    publicKey: {
+                        challenge,
+                        rpId: 'https://keys.coinbase.com',
+                        timeout: 60000,
+                        userVerification: 'required'
+                    }
+                };
+
+                if (this.credentialId) {
+                    assertionOptions.publicKey.allowCredentials = [{
+                        id: ethers.getBytes(this.credentialId),
+                        type: 'public-key'
+                    }];
+                }
+
+                const assertion = await navigator.credentials.get(assertionOptions);
+
+                return ethers.AbiCoder.defaultAbiCoder().encode(
+                    ['uint8', 'tuple(bytes, bytes, bytes)'],
+                    [0, [
+                        Buffer.from(assertion.response.authenticatorData),
+                        Buffer.from(assertion.response.clientDataJSON),
+                        Buffer.from(assertion.response.signature)
+                    ]]
+                );
+            }
+
+            async createUserOp() {
+                const USDC_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+                const usdcInterface = new ethers.Interface([
+                    'function transfer(address to, uint256 value) returns (bool)'
+                ]);
+
+                const callData = usdcInterface.encodeFunctionData('transfer', [
+                    this.recipientAddress,
+                    ethers.parseUnits(this.amount.toString(), 6)
+                ]);
+
+                const nonce = await this.provider.getTransactionCount(this.walletAddress);
+
+                return {
+                    sender: this.walletAddress,
+                    nonce: ethers.toBeHex(nonce),
+                    initCode: '0x',
+                    callData,
+                    callGasLimit: ethers.toBeHex(500000),
+                    verificationGasLimit: ethers.toBeHex(500000),
+                    preVerificationGas: ethers.toBeHex(50000),
+                    maxFeePerGas: ethers.toBeHex(50000000000),
+                    maxPriorityFeePerGas: ethers.toBeHex(2000000000),
+                    paymasterAndData: '0x'
+                };
+            }
+
+            async submitUserOp(userOp) {
+                const ENTRY_POINT = '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789';
+                
+                return await fetch(this.bundlerUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: 1,
+                        method: 'eth_sendUserOperation',
+                        params: [userOp, ENTRY_POINT]
+                    })
+                }).then(r => r.json());
+            }
+
+            async start() {
+                try {
+                    const userOp = await this.createUserOp();
+                    const userOpHash = ethers.keccak256(
+                        ethers.AbiCoder.defaultAbiCoder().encode(
+                            ['address', 'uint256', 'bytes32', 'bytes32', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'bytes32'],
+                            [
+                                userOp.sender,
+                                userOp.nonce,
+                                ethers.keccak256(userOp.initCode),
+                                ethers.keccak256(userOp.callData),
+                                userOp.callGasLimit,
+                                userOp.verificationGasLimit,
+                                userOp.preVerificationGas,
+                                userOp.maxFeePerGas,
+                                userOp.maxPriorityFeePerGas,
+                                ethers.keccak256(userOp.paymasterAndData)
+                            ]
+                        )
+                    );
+                    
+                    userOp.signature = await this.signWithPasskey(userOpHash);
+                    const result = await this.submitUserOp(userOp);
+                    
+                    return result;
+                } catch (error) {
+                    throw new Error(`Recovery failed: ${error.message}`);
+                }
+            }
+        }
+
+        document.getElementById('recoveryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const status = document.getElementById('status');
+            status.textContent = 'Starting recovery...';
+
+            try {
+                const recovery = new SimplifiedRecovery(
+                    document.getElementById('walletAddress').value,
+                    document.getElementById('recipientAddress').value,
+                    document.getElementById('amount').value,
+                    document.getElementById('credentialId').value || null
+                );
+
+                const result = await recovery.start();
+                status.textContent = `Success! Transaction hash: ${result.result}`;
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+            }
+        });
+    </script>   
+</body>
+</html>
