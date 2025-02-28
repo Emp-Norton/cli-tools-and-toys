@@ -1,7 +1,7 @@
 import sys
 from PIL import Image
 
-ASCII_CHARS = "MN@8%#*+=-:. "
+ASCII_CHARS = "MN@8%#*+=',."
 
 def resize_image(image, new_width=100):
     """Resize image to new width while maintaining aspect ratio."""
